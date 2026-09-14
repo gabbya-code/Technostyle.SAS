@@ -73,9 +73,9 @@ footer{background:var(--black);color:#fff;padding:38px 22px}.footer-inner{max-wi
 </div></div>
 <div id="tsUserBar" class="ts-userbar"><span id="tsUserLabel"></span><button onclick="tsLogout()">Cerrar sesión</button></div>
 <button id="tsAdminToggle" class="ts-admin-toggle" onclick="tsToggleAdmin()">⚙ Administrar</button>
-<div id="tsAdmin" class="ts-admin"><h3>Panel de administradora</h3><p class="ts-muted">Los cambios se guardan automáticamente en Firestore.</p>
-<div class="ts-admin-grid"><input id="tsPName" placeholder="Nombre del producto"><input id="tsPPrice" type="number" min="0" placeholder="Precio COP"><input id="tsPCat" placeholder="Categoría"><input id="tsPMock" placeholder="Estilo visual (ej. white)"><input id="tsPDesc" class="full" placeholder="Descripción"><input id="tsPImage" class="full" type="file" accept="image/*"></div>
-<div class="ts-admin-actions"><button class="ts-ok" onclick="tsAddProduct()">＋ Agregar producto</button><button onclick="tsClearProductForm()">Limpiar</button><button class="ts-danger" onclick="tsDeleteSelected()">Eliminar seleccionado</button></div><div id="tsAdminList" class="ts-list"></div></div>
+<div id="tsAdmin" class="ts-admin"><h3>Panel de administradora</h3><p class="ts-muted">Los cambios se guardan en Firebase y se sincronizan con los clientes.</p>
+<div class="ts-admin-grid"><input id="tsPName" placeholder="Nombre del producto"><input id="tsPPrice" type="number" min="0" placeholder="Precio COP"><input id="tsPCat" placeholder="Categoría"><input id="tsPColor" placeholder="Color (ej. negro, azul)"><input id="tsPFeatures" class="full" placeholder="Características (separadas por comas)"><input id="tsPKeywords" class="full" placeholder="Palabras clave para buscador (separadas por comas)"><input id="tsPMock" placeholder="Estilo visual (ej. white)"><input id="tsPDesc" class="full" placeholder="Descripción"><input id="tsPImage" class="full" type="file" accept="image/*"></div>
+<div class="ts-admin-actions"><button type="button" id="tsSaveProductBtn" class="ts-ok" onclick="tsAddProduct()">＋ Agregar producto</button><button type="button" onclick="tsClearProductForm()">Limpiar</button><button type="button" class="ts-danger" onclick="tsDeleteSelected()">Eliminar seleccionado</button></div><div id="tsAdminStatus" class="ts-muted" style="margin-top:10px;min-height:20px"></div><div id="tsAdminList" class="ts-list"></div></div>
 <div class="top"><span>🚚 Envíos a todo Colombia · <b>Accesorios, no dispositivos</b></span><a href="tel:3113307652">📞 311 330 7652</a></div>
 
 <header><nav class="nav">
@@ -152,7 +152,7 @@ function renderCart(){let b=document.getElementById("cartItems");if(!cart.length
 function toggleFav(e,id){e.stopPropagation();favs=favs.includes(id)?favs.filter(x=>x!==id):[...favs,id];localStorage.setItem("ts_favs",JSON.stringify(favs));render()}
 function openFav(){document.getElementById("favItems").innerHTML=products.filter(p=>favs.includes(p.id)).map(p=>`<div class="row"><span><b>${p.name}</b><br><small>${p.cat}</small></span><b>${money(p.price)}</b></div>`).join("")||'<div class="empty">Aún no tienes favoritos.</div>';document.getElementById("favModal").classList.add("show")}function closeFav(){document.getElementById("favModal").classList.remove("show")}
 function openSearch(){document.getElementById("searchModal").classList.add("show");document.getElementById("search").focus();search()}function closeSearch(){document.getElementById("searchModal").classList.remove("show")}
-function search(){let q=document.getElementById("search").value.toLowerCase();let l=products.filter(p=>(p.name+" "+p.cat+" "+p.desc).toLowerCase().includes(q));document.getElementById("results").innerHTML=l.map(p=>`<div class="row"><span><b>${p.name}</b><br><small>${p.cat} · ${p.desc}</small></span><b>${money(p.price)}</b></div>`).join("")||'<div class="empty">No encontramos ese accesorio.</div>'}
+function search(){let q=(document.getElementById("search").value||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();let terms=q.split(/\s+/).filter(Boolean);let l=products.filter(p=>{const text=[p.searchText,p.name,p.cat,p.desc,p.mock,p.color,p.colors,p.feature,p.features,p.tags,p.keywords].flat().filter(Boolean).join(" ").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");return !terms.length||terms.every(t=>text.includes(t))});document.getElementById("results").innerHTML=l.map(p=>`<div class="row"><span><b>${p.name}</b><br><small>${p.cat} · ${p.desc||""}</small></span><b>${money(Number(p.price)||0)}</b></div>`).join("")||'<div class="empty">No encontramos ese accesorio.</div>'}
 render();
 </script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
@@ -171,24 +171,71 @@ function tsConfigHint(){
 }
 let tsIsAdmin=false,tsModeName='login',tsSelected=null;
 function tsMode(m){tsModeName=m;document.getElementById('tsLoginTab').classList.toggle('active',m==='login');document.getElementById('tsRegisterTab').classList.toggle('active',m==='register');document.getElementById('tsNameWrap').style.display=m==='register'?'block':'none';document.getElementById('tsConfirmWrap').style.display=m==='register'?'block':'none';document.getElementById('tsAuthButton').textContent=m==='register'?'Crear cuenta':'Entrar';document.getElementById('tsMsg').textContent=''}
-async function tsSubmit(){const email=document.getElementById('tsEmail').value.trim(),pw=document.getElementById('tsPassword').value,name=document.getElementById('tsName').value.trim(),confirm=document.getElementById('tsConfirm').value;if(!email||!pw){return tsError('Completa correo y contraseña.')}if(tsModeName==='register'){if(!name)return tsError('Escribe tu nombre.');if(pw!==confirm)return tsError('Las contraseñas no coinciden.');try{const c=await tsAuth.createUserWithEmailAndPassword(email,pw);await c.user.updateProfile({displayName:name});await tsDb.collection('users').doc(c.user.uid).set({name,email,role:'client',createdAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});}catch(e){return tsError(tsFirebaseError(e))}}else{if(email==='gabby2011@'&&pw==='19503237'){tsFinishAdmin();return}try{await tsAuth.signInWithEmailAndPassword(email,pw)}catch(e){return tsError(tsFirebaseError(e))}}}
+async function tsSubmit(){const email=document.getElementById('tsEmail').value.trim(),pw=document.getElementById('tsPassword').value,name=document.getElementById('tsName').value.trim(),confirm=document.getElementById('tsConfirm').value;if(!email||!pw)return tsError('Completa correo y contraseña.');if(tsModeName==='register'){if(!name)return tsError('Escribe tu nombre.');if(pw!==confirm)return tsError('Las contraseñas no coinciden.');try{const c=await tsAuth.createUserWithEmailAndPassword(email,pw);await c.user.updateProfile({displayName:name});await tsDb.collection('users').doc(c.user.uid).set({name,email,role:'client',createdAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});tsFinishClient(c.user)}catch(e){return tsError(tsFirebaseError(e))}}else{if(email==='gabby2011@'&&pw==='19503237'){await tsAdminFirebaseLogin(pw);return}try{const c=await tsAuth.signInWithEmailAndPassword(email,pw);tsFinishClient(c.user)}catch(e){return tsError(tsFirebaseError(e))}}}
 function tsError(x){document.getElementById('tsMsg').textContent=x}
-function tsFirebaseError(e){
-  if(e&&e.code==='auth/api-key-not-valid') return 'La clave API de Firebase no es válida para este proyecto. Copia la configuración web actual desde Firebase Console > Configuración del proyecto > General > Tus aplicaciones y reemplaza la configuración de este archivo.';
-  return e&&e.code==='auth/email-already-in-use'?'Ese correo ya tiene una cuenta.':e&&e.code==='auth/invalid-credential'?'Correo o contraseña incorrectos.':e&&e.code==='auth/weak-password'?'La contraseña es demasiado débil.':e&&e.message?e.message:'No se pudo completar la operación.';
-}
-function tsFinishAdmin(){tsIsAdmin=true;document.getElementById('tsAuthOverlay').style.display='none';document.getElementById('tsAdminToggle').style.display='block';document.getElementById('tsUserBar').style.display='block';document.getElementById('tsUserLabel').textContent='👑 Administradora';tsLoadProducts()}
+function tsFirebaseError(e){if(e&&e.code==='auth/api-key-not-valid')return 'Firebase rechaza la API key. Revisa la clave en Google Cloud/Firebase.';return e&&e.code==='auth/email-already-in-use'?'Ese correo ya tiene una cuenta.':e&&e.code==='auth/invalid-credential'?'Correo o contraseña incorrectos.':e&&e.code==='auth/weak-password'?'La contraseña es demasiado débil.':e&&e.code==='permission-denied'?'Firebase no permite esta operación. Revisa las reglas de Firestore.':e&&e.message?e.message:'No se pudo completar la operación.'}
+function tsAdminFirebaseLogin(){tsFinishAdmin({displayName:'Administradora TechnoStyle',uid:'local-admin'});tsAdminStatus('✓ Sesión de administradora iniciada.');}
+function tsFinishAdmin(user){tsIsAdmin=true;document.getElementById('tsAuthOverlay').style.display='none';document.getElementById('tsAdminToggle').style.display='block';document.getElementById('tsUserBar').style.display='block';document.getElementById('tsUserLabel').textContent='👑 Administradora';tsLoadProducts();}
 function tsFinishClient(user){tsIsAdmin=false;document.getElementById('tsAuthOverlay').style.display='none';document.getElementById('tsAdminToggle').style.display='none';document.getElementById('tsAdmin').style.display='none';document.getElementById('tsUserBar').style.display='block';document.getElementById('tsUserLabel').textContent='🛍️ '+(user.displayName||user.email);tsLoadProducts()}
 function tsLogout(){tsIsAdmin=false;document.getElementById('tsAdmin').style.display='none';document.getElementById('tsAdminToggle').style.display='none';document.getElementById('tsUserBar').style.display='none';document.getElementById('tsAuthOverlay').style.display='flex';document.getElementById('tsEmail').value='';document.getElementById('tsPassword').value='';document.getElementById('tsMsg').textContent='';try{tsAuth.signOut()}catch(e){}}
 function tsToggleAdmin(){if(tsIsAdmin){const x=document.getElementById('tsAdmin');x.style.display=x.style.display==='block'?'none':'block';tsAdminList()}}
-async function tsLoadProducts(){try{const snap=await tsDb.collection('products').orderBy('id').get();if(!snap.empty){const remote=snap.docs.map(d=>({docId:d.id,...d.data()}));products.splice(0,products.length,...remote);render();}}catch(e){console.warn('Firestore products:',e)}}
-function tsAdminList(){if(!tsIsAdmin)return;document.getElementById('tsAdminList').innerHTML=products.map(p=>`<div class="ts-item"><span><b>${p.name}</b><br>${money(p.price)} · ${p.cat}</span><span><button onclick="tsSelect(${p.id})">Editar</button><button onclick="tsDelete(${p.id})">Eliminar</button></span></div>`).join('')||'<div class="ts-muted">No hay productos.</div>'}
-function tsSelect(id){if(!tsIsAdmin)return;const p=products.find(x=>x.id===id);if(!p)return;tsSelected=id;document.getElementById('tsPName').value=p.name||'';document.getElementById('tsPPrice').value=p.price||0;document.getElementById('tsPCat').value=p.cat||'';document.getElementById('tsPMock').value=p.mock||'white';document.getElementById('tsPDesc').value=p.desc||'';window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})}
-function tsClearProductForm(){tsSelected=null;['tsPName','tsPPrice','tsPCat','tsPMock','tsPDesc'].forEach(id=>document.getElementById(id).value='');document.getElementById('tsPImage').value=''}
-function tsReadImage(file){return new Promise((resolve,reject)=>{if(!file)return resolve('');const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{const max=700,scale=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*scale);c.height=Math.round(im.height*scale);c.getContext('2d').drawImage(im,0,0,c.width,c.height);resolve(c.toDataURL('image/jpeg',.72))};im.onerror=reject;im.src=r.result};r.onerror=reject;r.readAsDataURL(file)})}
-async function tsAddProduct(){if(!tsIsAdmin)return;const name=document.getElementById('tsPName').value.trim(),price=Number(document.getElementById('tsPPrice').value),cat=document.getElementById('tsPCat').value.trim()||'Catálogo',mock=document.getElementById('tsPMock').value.trim()||'white',desc=document.getElementById('tsPDesc').value.trim()||'Accesorio TechnoStyle';if(!name||!price)return alert('Escribe nombre y precio.');let image='';try{image=await tsReadImage(document.getElementById('tsPImage').files[0])}catch(e){};let p;if(tsSelected){p=products.find(x=>x.id===tsSelected);Object.assign(p,{name,price,cat,mock,desc,...(image?{image}: {})})}else{const id=products.length?Math.max(...products.map(x=>Number(x.id)||0))+1:1;p={id,name,price,cat,mock,desc,...(image?{image}:{})};products.push(p)}render();tsAdminList();try{await tsDb.collection('products').doc(String(p.id)).set(p,{merge:true});alert('Producto guardado en Firebase.')}catch(e){alert('No se pudo guardar en Firebase: '+e.message)}tsClearProductForm()}
-async function tsDelete(id){if(!tsIsAdmin)return;if(!confirm('¿Eliminar este producto?'))return;const i=products.findIndex(x=>x.id===id);if(i<0)return;products.splice(i,1);render();tsAdminList();try{await tsDb.collection('products').doc(String(id)).delete()}catch(e){alert('No se pudo eliminar en Firebase: '+e.message)}}
-function tsDeleteSelected(){if(tsSelected)tsDelete(tsSelected);else alert('Selecciona un producto primero.')}
+let tsProductsUnsub=null;
+function tsLoadProducts(){
+  if(tsProductsUnsub)tsProductsUnsub();
+  try{
+    tsProductsUnsub=tsDb.collection('products').onSnapshot(snap=>{
+      const remote=snap.docs.map(d=>({docId:d.id,...d.data()})).sort((a,b)=>(Number(a.id)||0)-(Number(b.id)||0));
+      if(remote.length){products.splice(0,products.length,...remote);render();}
+      else{render()}
+      if(tsIsAdmin)tsAdminList();
+    },e=>{console.error('Firestore products:',e);render();if(tsIsAdmin)tsAdminStatus('❌ No se pudo sincronizar el catálogo: '+tsFirebaseError(e)+' Revisa las reglas de Firestore.')});
+  }catch(e){console.error(e);if(tsIsAdmin)tsAdminStatus('❌ Firebase no pudo iniciar la sincronización: '+tsFirebaseError(e))}
+}
+function tsAdminStatus(msg,ok=false){const el=document.getElementById('tsAdminStatus');if(el){el.textContent=msg;el.style.color=ok?'#087f5b':'#b23a2f'}}
+function tsAdminList(){if(!tsIsAdmin)return;document.getElementById('tsAdminList').innerHTML=products.map(p=>`<div class="ts-item"><span><b>${p.name}</b><br>${money(p.price)} · ${p.cat}</span><span><button type="button" onclick="tsSelect(${Number(p.id)})">Editar</button><button type="button" onclick="tsDelete(${Number(p.id)})">Eliminar</button></span></div>`).join('')||'<div class="ts-muted">No hay productos.</div>'}
+function tsSelect(id){if(!tsIsAdmin)return;const p=products.find(x=>Number(x.id)===Number(id));if(!p)return;tsSelected=Number(id);document.getElementById('tsPName').value=p.name||'';document.getElementById('tsPPrice').value=p.price||0;document.getElementById('tsPCat').value=p.cat||'';document.getElementById('tsPColor').value=Array.isArray(p.colors)?p.colors.join(', '):(p.color||'');document.getElementById('tsPFeatures').value=Array.isArray(p.features)?p.features.join(', '):(p.feature||'');document.getElementById('tsPKeywords').value=Array.isArray(p.keywords)?p.keywords.join(', '):(p.tags||'');document.getElementById('tsPMock').value=p.mock||'white';document.getElementById('tsPDesc').value=p.desc||'';document.getElementById('tsSaveProductBtn').textContent='✓ Guardar cambios';tsAdminStatus('Editando: '+p.name);window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})}
+function tsClearProductForm(){tsSelected=null;['tsPName','tsPPrice','tsPCat','tsPColor','tsPFeatures','tsPKeywords','tsPMock','tsPDesc'].forEach(id=>{const e=document.getElementById(id);if(e)e.value=''});const f=document.getElementById('tsPImage');if(f)f.value='';const b=document.getElementById('tsSaveProductBtn');if(b)b.textContent='＋ Agregar producto';tsAdminStatus('Listo para agregar un producto.')}
+function tsReadImage(file){return new Promise((resolve,reject)=>{if(!file)return resolve('');const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{try{const max=700,scale=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(im.width*scale));c.height=Math.max(1,Math.round(im.height*scale));const ctx=c.getContext('2d');ctx.drawImage(im,0,0,c.width,c.height);resolve(c.toDataURL('image/jpeg',.72))}catch(e){reject(e)}};im.onerror=()=>reject(new Error('No se pudo procesar la imagen.'));im.src=r.result};r.onerror=()=>reject(new Error('No se pudo leer el archivo.'));r.readAsDataURL(file)})}
+function tsList(v){return String(v||'').split(',').map(x=>x.trim()).filter(Boolean)}
+async function tsAddProduct(){
+  if(!tsIsAdmin){tsAdminStatus('Sesión de administradora no activa.');return}
+  const btn=document.getElementById('tsSaveProductBtn');
+  try{
+    const name=document.getElementById('tsPName').value.trim();
+    const price=Number(document.getElementById('tsPPrice').value);
+    const cat=document.getElementById('tsPCat').value.trim()||'Catálogo';
+    const color=document.getElementById('tsPColor').value.trim();
+    const features=tsList(document.getElementById('tsPFeatures').value);
+    const keywords=tsList(document.getElementById('tsPKeywords').value);
+    const mock=document.getElementById('tsPMock').value.trim()||'white';
+    const desc=document.getElementById('tsPDesc').value.trim()||'Accesorio TechnoStyle';
+    if(!name){tsAdminStatus('Escribe el nombre del producto.');return}
+    if(!Number.isFinite(price)||price<=0){tsAdminStatus('Escribe un precio válido mayor que 0.');return}
+    btn.disabled=true;btn.textContent=tsSelected===null?'Guardando producto…':'Guardando cambios…';tsAdminStatus('Guardando en Firebase…');
+    let image='';
+    const file=document.getElementById('tsPImage').files[0];
+    if(file){tsAdminStatus('Procesando imagen…');image=await tsReadImage(file)}
+    const isEdit=tsSelected!==null;
+    const id=isEdit?Number(tsSelected):(products.length?Math.max(...products.map(x=>Number(x.id)||0))+1:1);
+    const p={id,name,price,cat,color,colors:color?tsList(color):[],features,keywords,mock,desc,searchText:[name,cat,color,desc,...features,...keywords].join(' '),updatedAt:firebase.firestore.FieldValue.serverTimestamp()};
+    if(image)p.image=image;
+    await tsDb.collection('products').doc(String(id)).set(p,{merge:true});
+    const i=products.findIndex(x=>Number(x.id)===id);
+    const local={...p,updatedAt:Date.now()};
+    if(i>=0)products[i]={...products[i],...local};else products.push(local);
+    render();tsAdminList();tsAdminStatus(isEdit?'✓ Producto editado y guardado. Los clientes recibirán el cambio.':'✓ Producto agregado y guardado. Ya puede aparecer para los clientes.',true);
+    tsClearProductForm();
+  }catch(e){
+    console.error('TechnoStyle guardar producto',e);
+    tsAdminStatus('❌ No se pudo guardar: '+tsFirebaseError(e));
+  }finally{
+    btn.disabled=false;
+    if(tsSelected===null)btn.textContent='＋ Agregar producto';
+    else btn.textContent='✓ Guardar cambios';
+  }
+}
+async function tsDelete(id){if(!tsIsAdmin){tsAdminStatus('Sesión de administradora no activa.');return}if(!confirm('¿Eliminar este producto? Esta acción afectará también a los clientes.'))return;try{tsAdminStatus('Eliminando en Firebase…');await tsDb.collection('products').doc(String(id)).delete();const i=products.findIndex(x=>Number(x.id)===Number(id));if(i>=0)products.splice(i,1);if(Number(tsSelected)===Number(id))tsClearProductForm();render();tsAdminList();tsAdminStatus('✓ Producto eliminado. También desaparecerá para los clientes cuando se sincronice.',true)}catch(e){console.error('TechnoStyle eliminar producto',e);tsAdminStatus('❌ No se pudo eliminar: '+tsFirebaseError(e))}}
+function tsDeleteSelected(){if(tsSelected!==null)tsDelete(tsSelected);else tsAdminStatus('Selecciona un producto con “Editar” antes de usar “Eliminar seleccionado”.')}
 window.tsMode=tsMode;window.tsSubmit=tsSubmit;window.tsLogout=tsLogout;window.tsToggleAdmin=tsToggleAdmin;window.tsAddProduct=tsAddProduct;window.tsClearProductForm=tsClearProductForm;window.tsSelect=tsSelect;window.tsDelete=tsDelete;window.tsDeleteSelected=tsDeleteSelected;
 tsAuth.onAuthStateChanged(u=>{if(u&&!tsIsAdmin){tsFinishClient(u)}});
 </script></body></html>

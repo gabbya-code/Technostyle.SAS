@@ -166,6 +166,7 @@ let tsProductsUnsub=null;
 let tsCatalogReady=false;
 let tsSeeding=false;
 let tsSnapshotBusy=false;
+let tsRemoteCatalogSeen=false;
 
 function tsNormalizeProduct(raw, docId){
   const p={...raw,docId:String(docId||raw.docId||'')};
@@ -213,18 +214,25 @@ function tsLoadProducts(){
         .filter(p=>p.id>0)
         .sort((a,b)=>a.id-b.id);
       if(remote.length){
+        tsRemoteCatalogSeen=true;
         products.splice(0,products.length,...remote);
+        tsCatalogReady=true;
       }else if(tsIsAdmin && !tsCatalogReady){
-        // La colección está vacía: la administradora puede crear la base inicial.
+        // Si Firebase está vacío, la administradora crea la base inicial.
         await tsSeedInitialCatalogIfEmpty();
         return;
-      }else if(!remote.length && tsCatalogReady){
+      }else if(tsRemoteCatalogSeen){
+        // Si ya existió un catálogo remoto y quedó vacío, respetamos ese estado.
         products.splice(0,products.length);
       }
+      // Si un cliente entra antes de que el admin haya sembrado Firebase,
+      // conservamos el catálogo incluido en el HTML para que nunca vea una tienda vacía.
       render();
       if(tsIsAdmin)tsAdminList();
     },e=>{
       console.error('Firestore products:',e);
+      // Ante un fallo temporal de Firebase, mostramos el catálogo local incluido en el HTML.
+      // Esto evita que el cliente vea una página vacía mientras se recupera la conexión.
       render();
       if(tsIsAdmin)tsAdminStatus('❌ No se pudo sincronizar el catálogo: '+tsFirebaseError(e));
     });
